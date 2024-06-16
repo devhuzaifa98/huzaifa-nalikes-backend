@@ -23,7 +23,7 @@ io.on("connection", async (socket) => {
   if (!auth) return socket.disconnect();
   const decoded = jwt.verify(auth, process.env.SECRET_KEY);
   if (!decoded) return socket.disconnect();
-  const user = await User.findOne({ username: decoded.username });
+  const user = await User.findOne({ username: decoded.username }).lean();
   sessionHandler(io, socket, user);
 });
 

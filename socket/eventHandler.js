@@ -1,7 +1,7 @@
 import User from "../schema/User.js";
 import { rewardWinner } from "../utils/web3.js";
+import Session from "../schema/Session.js";
 
-const sessions = {};
 
 const generateRandomSessionId = () => {
   const characters =
@@ -14,106 +14,127 @@ const generateRandomSessionId = () => {
   return result;
 };
 
-const createSession = (sessionId, user) => {
-  sessions[sessionId] = {
+// Create a new session
+const createSession = async (sessionId, user) => {
+  const session = new Session({
     id: sessionId,
-    users: {},
-    timer: null,
-    startTime: null,
-  };
-  sessions[sessionId].users[user._id] = {
-    username: user.username,
-    count: 0,
-  };
+    users: {
+      [user._id]: {
+        username: user.username,
+        count: 0,
+      },
+    },
+  });
+  await session.save();
 };
 
-const getSession = (sessionId) => sessions[sessionId];
+// Get a session by its ID
+const getSession = async (sessionId) => {
+  return await Session.findOne({ id: sessionId });
+};
 
-const getSessionResponse = (sessionId) => {
-  const session = sessions[sessionId];
+// Get a response for the session
+const getSessionResponse = (session) => {
   return JSON.stringify({
-    id: sessionId,
+    id: session.id,
     users: session.users,
     startTime: session.startTime,
   });
 };
 
-const deleteSession = (sessionId) => {
-  const timer = sessions[sessionId].timer;
-  clearTimeout(timer);
-  delete sessions[sessionId];
-};
-
+// Handle user joining a session
 const handleJoin = async (io, socket, id, user) => {
   const sessionId = !id || id.length === 0 ? generateRandomSessionId() : id;
-  if (!getSession(sessionId)) {
-    createSession(sessionId, user);
+  let session = await getSession(sessionId);
+  if (!session) {
+    await createSession(sessionId, user);
+    session = await getSession(sessionId);
   }
-  socket.join(sessionId);
-  getSession(sessionId).users[user._id] = {
+  session.users.set(user._id, {
     username: user.username,
     count: 0,
-  };
+  });
+  await session.save();
 
-  io.to(sessionId).emit("update", getSessionResponse(sessionId));
+  socket.join(sessionId);
+  io.to(sessionId).emit("update", getSessionResponse(session));
   io.to(sessionId).emit(
     "notification",
     `${user.username} has joined the game!`
   );
 };
 
-const handleDisconnect = (io, socket, user) => {
-  for (const sessionId in sessions) {
-    if (getSession(sessionId).users[user._id]) {
-      const username = getSession(sessionId).users[user._id].username;
+// Handle user disconnecting from a session
+const handleDisconnect = async (io, socket, user) => {
+  // Find sessions where the user is present
+  const sessions = await Session.find({
+    [`users.${user._id.toString()}`]: { $exists: true },
+  });
+  for (const session of sessions) {
+    const username = session.users.get(user._id).username;
 
-      delete getSession(sessionId).users[user._id];
+    session.users.delete(user._id);
+    await session.save();
 
-      io.to(sessionId).emit("update", getSessionResponse(sessionId));
-      io.to(sessionId).emit("notification", `${username} has left the game.`);
+    io.to(session.id).emit("update", getSessionResponse(session));
+    io.to(session.id).emit("notification", `${username} has left the game.`);
 
-      if (Object.keys(getSession(sessionId).users).length === 0) {
-        deleteSession(sessionId);
-      }
-
-      break;
+    if (session.users.size === 0) {
+      await Session.deleteOne({ id: session.id });
     }
+
+    break;
   }
 };
 
-const handleClick = (io, socket, sessionId, user) => {
-  const session = getSession(sessionId);
+// Handle user clicking in a session
+const handleClick = async (io, socket, sessionId, user) => {
+  const session = await getSession(sessionId);
   if (!session) return;
 
   if (!session.startTime) {
-    session.startTime = Date.now();
-    session.timer = setTimeout(() => endSession(io, sessionId), 60 * 1000); // 1 minute timer
+    session.startTime = Date.now(); // current time in milliseconds
   }
 
-  session.users[user._id].count += 1;
+  session.users.get(user._id).count += 1;
+  await session.save();
 
-  io.to(sessionId).emit("update", getSessionResponse(sessionId));
+  io.to(sessionId).emit("update", getSessionResponse(session));
 };
 
-const endSession = async (io, sessionId) => {
-  const session = getSession(sessionId);
-  if (!session) return;
-
-  let winner = Object.values(session.users).sort(
+// End a session
+const endSession = async (io, session) => {
+  let winner = Array.from(session.users.values()).sort(
     (a, b) => b.count - a.count
   )[0];
 
-  io.to(sessionId).emit("end", JSON.stringify({ winner }));
-  io.to(sessionId).emit("notification", `${winner.username} has won the game!`);
+  io.to(session.id).emit("end", JSON.stringify({ winner }));
+  io.to(session.id).emit(
+    "notification",
+    `${winner.username} has won the game!`
+  );
 
   try {
-    winner = await User.findOne({ username: winner.username });
-    await rewardWinner(winner.address, "1000");
+    const winnerUser = await User.findOne({ username: winner.username });
+    rewardWinner(winnerUser.address, "1000");
   } catch (error) {
     console.log("Error while rewarding ", winner.username);
   }
-
-  deleteSession(sessionId);
 };
 
-export { handleDisconnect, handleJoin, handleClick, endSession };
+const startGlobalTimer = (io) => {
+  setInterval(async () => {
+    const expiredSessions = await Session.deleteExpiredSessions();
+    for (const session of expiredSessions) {
+      endSession(io, session);
+    }
+  }, 1000);
+};
+
+export {
+  handleDisconnect,
+  handleJoin,
+  handleClick,
+  endSession,
+  startGlobalTimer,
+};
