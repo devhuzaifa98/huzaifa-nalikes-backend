@@ -24,14 +24,19 @@ export const rewardWinner = async (winnerAddress, amount) => {
       gas: gasEstimate,
       gasPrice: gasPrice,
     };
+
     const signedTx = await web3.eth.accounts.signTransaction(
       tx,
       account.privateKey
     );
+
     const receipt = await web3.eth.sendSignedTransaction(
       signedTx.rawTransaction
     );
-    return { transactionHash: receipt.transactionHash };
+
+    return { 
+      transactionHash: receipt.transactionHash
+    };
   } catch (err) {
     console.error("Error transferring Ether:", err);
   }

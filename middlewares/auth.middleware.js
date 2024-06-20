@@ -15,7 +15,7 @@ export const authorize = async (req, res, next) => {
     const user = await User.findOne({ username });
 
     if (!user) {
-      return res.status(401).json({ message: "Invalid Token" });
+      throw new Error("Invalid Token");
     }
 
     req.body.user = user;

@@ -108,7 +108,6 @@ const endSession = async (io, session) => {
     (a, b) => b.count - a.count
   )[0];
 
-  io.to(session.id).emit("end", JSON.stringify({ winner }));
   io.to(session.id).emit(
     "notification",
     `${winner.username} has won the game!`
@@ -116,9 +115,12 @@ const endSession = async (io, session) => {
 
   try {
     const winnerUser = await User.findOne({ username: winner.username });
-    rewardWinner(winnerUser.address, "1000");
+    const { transactionHash } = await rewardWinner(winnerUser.address, "1000");
+
+    io.to(session.id).emit("end", JSON.stringify({ winner, transactionHash }));
   } catch (error) {
     console.log("Error while rewarding ", winner.username);
+    io.to(session.id).emit("end", JSON.stringify({ winner }))
   }
 };
 
